@@ -34,7 +34,7 @@ class PromptedTextStyleTransferReward(BaseReward):
         end_punct: str,  # End punctuation to cut off after generation
     ):
         generator_device = 0
-        reward_device = 0 
+        reward_device = 0
 
         # Loading generator model
         assert task_lm in SUPPORTED_LMS
