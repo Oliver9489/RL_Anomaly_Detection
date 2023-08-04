@@ -24,9 +24,9 @@ def make_anomaly_detection_datasets(
         # else:
         #     max_size = config.max_size
 
-        source_img, GT_img = load_anomaly_detection_dataset(
+        source_img, GT_img, file_names = load_anomaly_detection_dataset(
             config.dataset, split, config.base_path)
-        ptad_dataset = PromptToAnomalyDetectionDataset(source_img, GT_img)
+        ptad_dataset = PromptToAnomalyDetectionDataset(source_img, GT_img, file_names)
         data_dict[split] = ptad_dataset
 
     return data_dict['train'], data_dict['dev'], data_dict['test']
@@ -107,7 +107,7 @@ class PromptedTextStyleTransferRewardConfig:
     # style_batch_size: int = 32
     style_batch_size: int = 8
     pad_token: str = '<|endoftext|>'
-    num_repeats: int = 2
+    num_repeats: int = 4
     num_samples: int = 1
     num_bootstraps: int = 2
     compute_zscore: bool = True  # Whether to compute z-score of rewards

@@ -33,8 +33,8 @@ def main(config: "DictConfig"):
 
     train_dataset, val_dataset, test_dataset = \
         make_anomaly_detection_datasets(config)
-    print('Train Size:', len(train_dataset))
-    print(type(train_dataset))
+    # print('Train Size:', len(train_dataset))
+    # print(type(train_dataset))
     # print('Examples:', train_dataset[:5])
     # print('Val Size', len(val_dataset))
     # print('Examples:', val_dataset[:5])

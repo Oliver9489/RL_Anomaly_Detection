@@ -12,10 +12,11 @@ from torchvision import transforms
 
 
 class PromptToAnomalyDetectionDataset(Dataset):
-    def __init__(self, source_img, GT_img):
+    def __init__(self, source_img, GT_img,file_names):
         assert len(source_img) == len(GT_img)
         self.source_img = source_img
         self.GT_img = GT_img
+        self.file_names = file_names
 
     def __len__(self):
         return len(self.source_img)
@@ -23,7 +24,8 @@ class PromptToAnomalyDetectionDataset(Dataset):
     def __getitem__(self, idx):
         to_tensor = ToTensor()
         item = {'source_img': self.source_img[idx],
-                'GT_img': self.GT_img[idx]
+                'GT_img': self.GT_img[idx],
+                'file_names': self.file_names[idx]
                 }
         return item
 
@@ -36,9 +38,9 @@ def load_anomaly_detection_dataset(
     # max_size: Optional[int],
     # max_length: Optional[int],
     # max_length_tokenizer: Optional[str]
-) -> Tuple[List[np.ndarray]]:
+) -> Tuple[List[np.ndarray],List[str]]:
     assert dataset in ['ksdd2']
-    assert split in ['train', 'test','dev']
+    assert split in ['train', 'test', 'dev']
     if dataset == 'ksdd2':
         filepath = f'{dataset}/{split}/'
         full_filepath = os.path.join(base_path, filepath)
@@ -49,7 +51,7 @@ def load_anomaly_detection_dataset(
         for name in file_names:
             img_name = os.path.join(full_filepath, name)
             gt = f'{name.split(".")[0]}_GT.png'
-            print(gt)
+            # print(gt)
             gt_name = os.path.join(full_filepath, gt)
             # get img data and its gt
             img = Image.open(img_name).convert("RGB")
@@ -63,4 +65,4 @@ def load_anomaly_detection_dataset(
             #     print(name.split('.')[0])
             #     print(gt.split('_GT')[0])
 
-    return source_img, GT_img
+    return source_img, GT_img,file_names
