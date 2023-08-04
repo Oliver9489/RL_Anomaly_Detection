@@ -17,7 +17,7 @@ def make_sql_module(model: BaseModel,
                      config.reward_shaping_old_max, 
                      config.reward_shaping_new_min, 
                      config.reward_shaping_new_max, 
-                     config.top_k, config.top_p, config.num_beams)
+                     config.top_k, config.top_p, config.num_beams, config.dataset)
 
 @dataclass
 class SQLModuleConfig:

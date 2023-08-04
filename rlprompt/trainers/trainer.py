@@ -19,36 +19,36 @@ class Trainer:
     Evaluation is done at the end of each epoch """
 
     def __init__(
-        self,
-        module: BaseModule,
-        # Train params
-        train_dataset: Optional[Dataset],
-        train_batch_size: int,
-        train_shuffle: bool,
-        train_drop_last: bool,
-        num_train_epochs: int,
-        max_train_steps: int,
-        # Eval params
-        do_eval: bool,
-        eval_dataset: Optional[Dataset],
-        eval_batch_size: int,
-        eval_steps: int,
-        # Save params
-        do_save: bool,
-        save_dir: str,
-        save_steps: int,
-        # Optimizer params
-        learning_rate: float,
-        gradient_clip: bool,
-        gradient_clip_norm: float,
-        # Checkpoint params
-        checkpoint_path: Optional[str],
-        # Random seed
-        random_seed: Optional[int],
-        # Wandb reporting
-        report_to_wandb: bool,
-        project_name: Optional[str],
-        run_name: Optional[str]
+            self,
+            module: BaseModule,
+            # Train params
+            train_dataset: Optional[Dataset],
+            train_batch_size: int,
+            train_shuffle: bool,
+            train_drop_last: bool,
+            num_train_epochs: int,
+            max_train_steps: int,
+            # Eval params
+            do_eval: bool,
+            eval_dataset: Optional[Dataset],
+            eval_batch_size: int,
+            eval_steps: int,
+            # Save params
+            do_save: bool,
+            save_dir: str,
+            save_steps: int,
+            # Optimizer params
+            learning_rate: float,
+            gradient_clip: bool,
+            gradient_clip_norm: float,
+            # Checkpoint params
+            checkpoint_path: Optional[str],
+            # Random seed
+            random_seed: Optional[int],
+            # Wandb reporting
+            report_to_wandb: bool,
+            project_name: Optional[str],
+            run_name: Optional[str]
     ):
         assert do_eval == False or eval_dataset is not None, \
             "Need to have eval_dataset if do_eval is True"
@@ -98,18 +98,19 @@ class Trainer:
 
     # @torch.no_grad
     def _train_step(
-        self,
-        step: int,
-        batch: Dict[str, Any]
+            self,
+            step: int,
+            batch: Dict[str, Any]
     ) -> Dict[str, Any]:
         model = self.module.train()
         model._pre_steps(step)
 
-        loss, batch_log = model(batch)
+        # where sql_module were called
+        loss = model(batch)
         loss.backward()
         self.train_op()
 
-        return batch_log
+        return
 
     def train(self,
               report_to_wandb: Optional[bool] = None,
@@ -121,15 +122,17 @@ class Trainer:
             report_to_wandb = self.report_to_wandb
         if project_name is None:
             project_name = self.project_name
-        if run_name is None: 
+        if run_name is None:
             run_name = self.run_name
-        if config is not None: 
+        if config is not None:
             config = eval(str(config))
         if report_to_wandb:
             wandb.init(project=project_name, name=run_name, config=config)
             wandb.watch(self.module, log=None)
 
         # Create saving path
+        # output path for pth file and json file
+        # record the trainning process
         eval_save_dir = os.path.join(self.save_dir, "eval")
         ckpt_save_dir = os.path.join(self.save_dir, "ckpt")
         if not os.path.exists(eval_save_dir):
@@ -147,62 +150,93 @@ class Trainer:
                 (self.max_train_steps // num_batches_per_epoch
                  + int(self.max_train_steps % num_batches_per_epoch > 0))
 
-        # Determine whether to evaluate by epoch or steps
-        eval_by_steps = self.eval_steps > 0
-        # Determine whether to save by epoch or steps
-        save_by_steps = self.save_steps > 0
+        # # Determine whether to evaluate by epoch or steps
+        # eval_by_steps = self.eval_steps > 0
+        # # Determine whether to save by epoch or steps
+        # save_by_steps = self.save_steps > 0
 
-        total_steps = 0
-        for epoch in range(total_train_epochs):
-            for step, batch in enumerate(train_dataloader):
-                batch_log = self._train_step(step, batch)
-                if report_to_wandb:
-                    wandb.log(batch_log)
-                total_steps += 1
+        # total_steps = 0
+        # for epoch in range(total_train_epochs):
 
-                if self.do_eval and eval_by_steps \
-                        and total_steps % self.eval_steps == 0:
-                    output_save_path = \
-                        os.path.join(eval_save_dir,
-                                     f'outputs.step.{total_steps}.json')
-                    eval_log = self.evaluate(output_save_path=output_save_path)
-                    if report_to_wandb:
-                        wandb.log(eval_log)
+        # do training
+        # here we only let model training through the entire train dataset and eval in test dataset
+        # and didn't set any other limited
+        for step, batch in enumerate(train_dataloader):
+            self._train_step(step, batch)
+            # total_steps += 1
 
-                if self.do_save and save_by_steps \
-                        and total_steps % self.save_steps == 0:
-                    torch.save({"steps": total_steps,
-                                "model_state_dict": self.module.state_dict()},
-                               os.path.join(ckpt_save_dir,
-                                            f"ckpt.step.{total_steps}.pth"))
-
-                if total_steps == self.max_train_steps:
-                    break
-
-            if self.do_eval and not eval_by_steps:
-                output_save_path = os.path.join(eval_save_dir,
-                                                f'outputs.epoch.{epoch+1}.json')
-                eval_log = self.evaluate(output_save_path=output_save_path)
-                wandb.log(eval_log)
-
-            if self.do_save and not save_by_steps:
-                torch.save({"steps": total_steps,
-                            "model_state_dict": self.module.state_dict()},
-                           os.path.join(ckpt_save_dir,
-                                        f"ckpt.epoch.{epoch+1}.pth"))
+        print("do eval")
+        # eval_log = self.evaluate(output_save_path=output_save_path)
+        output_save_path = os.path.join(eval_save_dir,
+                                        f'outputs.eval.json')
+        print("eval_log_savepath:", output_save_path)
+        eval_log = self.evaluate(output_save_path=output_save_path)
+        wandb.log(eval_log)
+        print("eval Finished")
+        #
+        # #     if self.do_eval and eval_by_steps \
+        # #             and total_steps % self.eval_steps == 0:
+        # #         output_save_path = \
+        # #             os.path.join(eval_save_dir,
+        # #                          f'outputs.step.{total_steps}.json')
+        # #         eval_log = self.evaluate(output_save_path=output_save_path)
+        # #         if report_to_wandb:
+        # #             wandb.log(eval_log)
+        # #
+        # #     if self.do_save and save_by_steps \
+        # #             and total_steps % self.save_steps == 0:
+        # #         torch.save({"steps": total_steps,
+        # #                     "model_state_dict": self.module.state_dict()},
+        # #                    os.path.join(ckpt_save_dir,
+        # #                                 f"ckpt.step.{total_steps}.pth"))
+        # #
+        # #     if total_steps == self.max_train_steps:
+        # #         break
+        # #
+        # # if self.do_eval and not eval_by_steps:
+        # #     output_save_path = os.path.join(eval_save_dir,
+        # #                                     f'outputs.epoch.{epoch+1}.json')
+        # #     eval_log = self.evaluate(output_save_path=output_save_path)
+        # #     wandb.log(eval_log)
+        # #
+        # # if self.do_save and not save_by_steps:
+        # #     torch.save({"steps": total_steps,
+        # #                 "model_state_dict": self.module.state_dict()},
+        # #                os.path.join(ckpt_save_dir,
+        # #                             f"ckpt.epoch.{epoch+1}.pth"))
+        # print("save_model")
+        # torch.save({"steps": total_steps,
+        #             "model_state_dict": self.module.state_dict()},
+        #            os.path.join(ckpt_save_dir,
+        #                         f"ckpt.model_train.pth"))
+        # print("model_savepath:", os.path.join(ckpt_save_dir, f"ckpt.model_train.pth"))
+        #
+        # print("do eval")
+        # # eval_log = self.evaluate(output_save_path=output_save_path)
+        # output_save_path = os.path.join(eval_save_dir,
+        #                                 f'outputs.eval.json')
+        # print("eval_log_savepath:", output_save_path)
+        # eval_log = self.evaluate(output_save_path=output_save_path)
+        # wandb.log(eval_log)
+        # print("eval Finished")
 
     def _get_eval_dataloader(self, eval_dataset: Dataset) -> DataLoader:
         return DataLoader(eval_dataset,
                           batch_size=self.eval_batch_size)
 
     def evaluate(
-        self,
-        eval_dataset: Optional[Dataset] = None,
-        output_save_path: Optional[str] = None,
-        compute_scores: bool = True
+            self,
+            eval_dataset: Optional[Dataset] = None,
+            output_save_path: Optional[str] = None,
+            compute_scores: bool = True
     ) -> Dict[str, np.number]:
         if eval_dataset is None:
             eval_dataset = self.eval_dataset
+
+        full_filepath = "./data/ksdd2/one_shot/ksdd2.tsv"
+        with open(full_filepath) as f:
+            source_text = [line.strip() for line in f]
+
         eval_dataloader = self._get_eval_dataloader(eval_dataset)
 
         model = self.module.eval()
@@ -210,11 +244,12 @@ class Trainer:
         scores: List[List[str]] = []
         for batch in eval_dataloader:
             infer_outputs: Dict[str, Union[torch.Tensor, List[List[str]]]]
-            infer_outputs = model.infer(batch)
+            infer_outputs = model.infer(batch, source_texts=source_text)
             hypos += infer_outputs['sample_tokens']
 
-            score, score_log = model.compute_rewards(
+            score = model.compute_rewards(
                 batch=batch,
+                source_texts=source_text,
                 output_tokens=infer_outputs['sample_tokens'])
             scores += score.detach().tolist()
 
@@ -223,15 +258,25 @@ class Trainer:
                        'scores': scores},
                       open(output_save_path, 'w'))
 
-        score = score.mean().item()
+        # score = score.mean().item()
 
-        utils.add_prefix_to_dict_keys_inplace(
-            score_log,
-            prefix=f"eval/rewards/")
+        # utils.add_prefix_to_dict_keys_inplace(
+        #     score_log,
+        #     prefix=f"eval/rewards/")
 
+        # print('Finish Eval')
+        # return utils.unionize_dicts([
+        #     score_log,
+        #     # gem_scores_dict,
+        #     {
+        #         f"eval/score": score,
+        #         f"eval/output_length": np.mean([len(tokens) \
+        #                                         for tokens in hypos])
+        #     }
+        # ])
+        print('eval score(avg iou):', score)
         print('Finish Eval')
         return utils.unionize_dicts([
-            score_log,
             # gem_scores_dict,
             {
                 f"eval/score": score,

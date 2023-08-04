@@ -1,3 +1,5 @@
+import os
+
 import torch
 import copy
 from typing import Optional, List, Dict, Any, Union, Tuple
@@ -10,7 +12,7 @@ from rlprompt.losses import sql_loss_with_sparse_rewards
 from rlprompt.utils import utils
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+anomaly_detection_dataset = ["ksdd2"]
 
 class SQLModule(BaseModule):
     def __init__(
@@ -32,6 +34,8 @@ class SQLModule(BaseModule):
         top_k: Optional[int],
         top_p: float,
         num_beams: int,
+        dataset: Optional[str],
+        activate: int = 0,
     ):
         super().__init__()
         # Initialize self._model and self._reward
@@ -60,7 +64,8 @@ class SQLModule(BaseModule):
         self._top_k = top_k
         self._top_p = top_p
         self._num_beams = num_beams
-
+        self._dataset = dataset
+        self._activate = activate
         if reward_shaping is True:
             self._reward_shaping_func = get_reward_shaping_func(
                 old_min=reward_shaping_old_min,
@@ -92,38 +97,52 @@ class SQLModule(BaseModule):
                 and step % self._target_update_steps == 0:
             self._sync_target_model()
 
+
     def forward(self, batch: Dict[str, Any]) -> Tuple[Union[torch.Tensor, Dict],
                                                       Dict[str, Any]]:
         loss_list = []
-        loss_log_list = []
-        for mode in self._forward_modes:
-            _loss, _loss_log = self._forward(mode=mode, batch=batch)
-            loss_list.append(_loss)
-            loss_log_list.append(_loss_log)
+        # loss_log_list = []
+        if self._dataset in anomaly_detection_dataset:
+            full_filepath = os.path.join("./data", self._dataset, self._dataset+".tsv")
+            with open(full_filepath) as f:
+                source_text = [line.strip() for line in f]
+            for mode in self._forward_modes:
+                _loss = self._forward(mode=mode, batch=batch, source_text=source_text)
+                loss_list.append(_loss)
+        else:
+            for mode in self._forward_modes:
+                _loss = self._forward(mode=mode, batch=batch)
+                loss_list.append(_loss)
+            # loss_log_list.append(_loss_log)
 
         # https://discuss.pytorch.org/t/get-the-mean-from-a-list-of-tensors/31989/2
         loss = torch.mean(torch.stack(loss_list))
-        loss_log = utils.unionize_dicts(loss_log_list)
+        # loss_log = utils.unionize_dicts(loss_log_list)
 
-        return loss, loss_log
+        return loss
 
     def _forward(
         self,
         mode: ForwardMode,
-        batch: Dict[str, Any]
+        batch: Dict[str, Any],
+        source_text: Optional[List[str]],
     ) -> Tuple[torch.Tensor, Dict]:
         if mode != ForwardMode.SQL_ON and mode != ForwardMode.INFER:
+            # TODO: Enable training modes other than on-policy
             raise NotImplementedError('Only on-policy sampling and greedy '
                                       'inference is supported now')
 
-        if mode == ForwardMode.SQL_ON:
-            (logits, logits_, output_tokens, output_ids, sequence_lengths) = \
-                self._decode_sampling(batch=batch)
+        if mode == ForwardMode.SQL_ON :
+            if source_text != None :
+                (logits, logits_, output_tokens, output_ids, sequence_lengths) = \
+                    self._decode_sampling(batch=batch, source_text=source_text)
+            else:
+                (logits, logits_, output_tokens, output_ids, sequence_lengths) = \
+                    self._decode_sampling(batch=batch)
 
-        raw_rewards, rewards_log = \
-            self.compute_rewards(batch=batch, 
-                                  output_tokens=output_tokens,
-                                  mode="train")
+            raw_rewards = \
+                self.compute_rewards(batch=batch, source_texts=source_text, output_tokens=output_tokens, mode="train")
+
         shaped_rewards = self._reward_shaping_func(raw_rewards)
 
         sql_loss, sql_loss_log = sql_loss_with_sparse_rewards(
@@ -135,42 +154,51 @@ class SQLModule(BaseModule):
             rewards=shaped_rewards,
             sequence_length=sequence_lengths)
 
-        utils.add_prefix_to_dict_keys_inplace(
-            rewards_log, prefix=f"{mode.value}/rewards/")
-        utils.add_prefix_to_dict_keys_inplace(
-            sql_loss_log, prefix=f"{mode.value}/")
-        sql_loss_log = utils.unionize_dicts([
-            rewards_log,
-            sql_loss_log,
-            {
-                f"{mode.value}/rewards/raw": raw_rewards.mean(),
-                f"{mode.value}/rewards/shaped": shaped_rewards.mean(),
-            },
-        ])
+        # utils.add_prefix_to_dict_keys_inplace(
+        #     rewards_log, prefix=f"{mode.value}/rewards/")
+        # utils.add_prefix_to_dict_keys_inplace(
+        #     sql_loss_log, prefix=f"{mode.value}/")
+        # sql_loss_log = utils.unionize_dicts([
+        #     rewards_log,
+        #     sql_loss_log,
+        #     {
+        #         f"{mode.value}/rewards/raw": raw_rewards.mean(),
+        #         f"{mode.value}/rewards/shaped": shaped_rewards.mean(),
+        #     },
+        # ])
 
-        return sql_loss, sql_loss_log
+        return sql_loss
 
     def compute_rewards(
         self,
         batch: Dict[str, Any],
+        source_texts: List[str],
         output_tokens: List[List[str]],
         to_tensor: bool = True,
-        mode: str = "infer"
+        mode: str = "infer",
     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
-        rewards_tensor, rewards_log = self._reward(
+        # output_tokens is a list that consist of the output texts
+        rewards_tensor = self._reward(
             **batch,
+            source_texts=source_texts,
             output_tokens=output_tokens,
             to_tensor=to_tensor,
-            mode=mode)
+            mode=mode,
+            dataset=self._dataset,
+            tst_active=self._activate,
+        )
 
         rewards_tensor = rewards_tensor.to(device)            
-        return rewards_tensor, rewards_log
+        return rewards_tensor
 
     def infer(
         self,
-        batch: Dict[str, Any]
+        batch: Dict[str, Any],
+        source_texts: List[str],
     ) -> Dict[str, Union[torch.Tensor, torch.LongTensor, List[List[str]]]]:
+
         return self._model.generate(**batch,
+                                    source_texts = source_texts,
                                     do_sample=False,
                                     top_k=self._top_k,
                                     top_p=self._top_p,
@@ -180,18 +208,30 @@ class SQLModule(BaseModule):
     def _decode_sampling(
         self,
         batch: Dict[str, Any],
+        source_text: Optional[List[str]],
     ) -> Tuple[torch.Tensor, torch.Tensor, List[List[str]],
                torch.LongTensor, torch.LongTensor]:
-        outputs = self._model.generate(**batch,
-                                       do_sample=True,
-                                       top_k=self._top_k,
-                                       top_p=self._top_p,
-                                       num_beams=self._num_beams)
+        if source_text != None:
+            outputs = self._model.generate(**batch,
+                                           source_texts=source_text,
+                                           do_sample=True,
+                                           top_k=self._top_k,
+                                           top_p=self._top_p,
+                                           num_beams=self._num_beams)
+        else:
+            outputs = self._model.generate(**batch,
+                                           do_sample=True,
+                                           top_k=self._top_k,
+                                           top_p=self._top_p,
+                                           num_beams=self._num_beams)
 
         batch_ = {k: v for k, v in batch.items()}
         batch_.update(outputs)
 
-        outputs_ = self._target_model.teacher_forcing(**batch_)
+        # in text_style_transfer target_model refer to None,in the other word,outputs come from self._model.generate()
+        outputs_ = self._target_model.teacher_forcing(**batch_,
+                                                      source_texts=source_text,
+                                                      )
 
         return (outputs['sample_logits'].contiguous(),
                 outputs_['sample_logits'].contiguous(),

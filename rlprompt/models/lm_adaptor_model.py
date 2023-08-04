@@ -41,9 +41,9 @@ class LMAdaptorModel(BaseModel):
     ):
         super().__init__()
 
-        assert policy_lm in SUPPORTED_LMS
+        assert policy_lm in SUPPORTED_LMS  # TODO: Support more LMs
         model = policy_lm
-        self.device = 0
+        self.device = 0  # TODO
         self.tokenizer = AutoTokenizer.from_pretrained(
             model,
             pad_token='<|endoftext|>')
@@ -165,7 +165,7 @@ class LMAdaptorModel(BaseModel):
         sample_lengths = (torch.tensor([max_new_tokens
                                         for _ in range(sample_ids.shape[0])])
                           .to(self.device))
-
+        # the sample_tokens is the text after style transfer
         output = dict(sample_tokens=sample_tokens,
                       sample_logits=sample_logits,
                       sample_ids=sample_ids,
@@ -261,6 +261,8 @@ class LMAdaptorModel(BaseModel):
                                       max_new_tokens=max_new_tokens,
                                       eos_token_id=eos_token_id)
         elif is_sample_gen_mode:
+            # this is the return of text_style_transfer.
+            # it's a Dict that contain "sample_tokens" that is the output of test_style_transfer
             return self.sample(source_texts=source_texts,
                                top_k=top_k,
                                top_p=top_p,
