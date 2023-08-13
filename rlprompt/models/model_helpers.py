@@ -13,7 +13,14 @@ def make_lm_adaptor_model(config: "DictConfig") -> LMAdaptorModel:
 
 
 def make_single_prompt_model(model: BaseModel,
-                             config: "DictConfig") -> SinglePromptModel:
+                             config: "DictConfig",
+                             prompt_infer_batch_size: int = -1,
+                             prompt_train_batch_size: int = -1
+                             ) -> SinglePromptModel:
+    if prompt_infer_batch_size != -1:
+        config.prompt_infer_batch_size = prompt_infer_batch_size
+    if prompt_train_batch_size != -1:
+        config.prompt_train_batch_size = prompt_train_batch_size
     return SinglePromptModel(model,
                              config.prompt_length,
                              config.prompt_train_batch_size,

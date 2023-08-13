@@ -8,6 +8,7 @@ from rlprompt.rewards import BaseReward
 def make_sql_module(model: BaseModel,
                     reward: BaseReward,
                     config: "DictConfig",
+                    eval_activate: int = 0,
                     target_model: Optional[BaseModel] = None) -> SQLModule:
     return SQLModule(model, target_model, reward, 
                      config.sql_loss_impl, config.training_mode, 
@@ -17,7 +18,8 @@ def make_sql_module(model: BaseModel,
                      config.reward_shaping_old_max, 
                      config.reward_shaping_new_min, 
                      config.reward_shaping_new_max, 
-                     config.top_k, config.top_p, config.num_beams, config.dataset)
+                     config.top_k, config.top_p, config.num_beams, config.dataset,
+                     eval_activate=eval_activate)
 
 @dataclass
 class SQLModuleConfig:

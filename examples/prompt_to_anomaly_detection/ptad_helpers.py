@@ -10,7 +10,6 @@ from ptad_data_utils import (PromptToAnomalyDetectionDataset,
                              load_anomaly_detection_dataset)
 
 
-
 def make_anomaly_detection_datasets(
         config: "DictConfig") -> Tuple[PromptToAnomalyDetectionDataset]:
     # assert config.direction in ['0_to_1', '1_to_0']
@@ -62,6 +61,8 @@ style_classifier_dict = {
     ('shakespeare', 2, 'train'): './style_classifiers/shakespeare-bert-base-uncased-train-100-2/',
     ('shakespeare', None, 'test'): './style_classifiers/shakespeare-bert-base-uncased-test-all/',
 }
+
+
 # def get_style_classifier(
 #     split: str,
 #     config: "DictConfig"
@@ -69,20 +70,22 @@ style_classifier_dict = {
 #     dataset_seed = config.dataset_seed if split != 'test' else None
 #     return style_classifier_dict[(config.dataset, dataset_seed, split)]
 def get_style_classifier(
-    split: str,
-    config: "DictConfig"
+        split: str,
+        config: "DictConfig"
 ) -> str:
     dataset_seed = config.dataset_seed if split != 'test' else None
     return style_classifier_dict[('shakespeare', dataset_seed, split)]
 
 
-def make_prompted_text_style_transfer_reward(
-        config: "DictConfig") -> PromptedToAnomalyDetectionReward:
+def make_prompted_to_anomaly_detection_reward(
+        config: "DictConfig", num_repeats: int = -1) -> PromptedToAnomalyDetectionReward:
+    if num_repeats != -1:
+        config.num_repeats = num_repeats
     return PromptedToAnomalyDetectionReward(
-        config.task_lm, config.task_top_k, config.style_classifier, 
+        config.task_lm, config.task_top_k,  # config.style_classifier,
         config.style_tokenizer,
-        config.style_batch_size, config.pad_token, config.num_repeats, 
-        config.num_samples, config.num_bootstraps, config.compute_zscore, 
+        config.style_batch_size, config.pad_token, config.num_repeats,
+        config.num_samples, config.num_bootstraps, config.compute_zscore,
         config.lower_outputs, config.control_output_length,
         config.template, config.end_punct)
 
@@ -91,7 +94,7 @@ def make_prompted_text_style_transfer_reward(
 class TextStyleTransferDatasetConfig:
     dataset: str = "???"
     dataset_seed: Optional[int] = None
-    direction: str = "???" 
+    direction: str = "???"
     base_path: str = './data'
     max_size: Optional[int] = None
     max_length: Optional[int] = None

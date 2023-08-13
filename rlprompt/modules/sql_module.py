@@ -36,6 +36,7 @@ class SQLModule(BaseModule):
         num_beams: int,
         dataset: Optional[str],
         activate: int = 0,
+        eval_activate: int = 0,
     ):
         super().__init__()
         # Initialize self._model and self._reward
@@ -66,6 +67,7 @@ class SQLModule(BaseModule):
         self._num_beams = num_beams
         self._dataset = dataset
         self._activate = activate
+        self._eval_activate = eval_activate
         if reward_shaping is True:
             self._reward_shaping_func = get_reward_shaping_func(
                 old_min=reward_shaping_old_min,
@@ -116,7 +118,8 @@ class SQLModule(BaseModule):
             # loss_log_list.append(_loss_log)
 
         # https://discuss.pytorch.org/t/get-the-mean-from-a-list-of-tensors/31989/2
-        loss = torch.mean(torch.stack(loss_list))
+        # loss = torch.mean(torch.stack(loss_list))
+        loss = loss_list[0]
         # loss_log = utils.unionize_dicts(loss_log_list)
 
         return loss
@@ -143,6 +146,7 @@ class SQLModule(BaseModule):
             raw_rewards = \
                 self.compute_rewards(batch=batch, source_texts=source_text, output_tokens=output_tokens, mode="train")
 
+        # do nothing but make a copy
         shaped_rewards = self._reward_shaping_func(raw_rewards)
 
         sql_loss, sql_loss_log = sql_loss_with_sparse_rewards(
@@ -153,19 +157,6 @@ class SQLModule(BaseModule):
             sampled_actions=None,
             rewards=shaped_rewards,
             sequence_length=sequence_lengths)
-
-        # utils.add_prefix_to_dict_keys_inplace(
-        #     rewards_log, prefix=f"{mode.value}/rewards/")
-        # utils.add_prefix_to_dict_keys_inplace(
-        #     sql_loss_log, prefix=f"{mode.value}/")
-        # sql_loss_log = utils.unionize_dicts([
-        #     rewards_log,
-        #     sql_loss_log,
-        #     {
-        #         f"{mode.value}/rewards/raw": raw_rewards.mean(),
-        #         f"{mode.value}/rewards/shaped": shaped_rewards.mean(),
-        #     },
-        # ])
 
         return sql_loss
 
@@ -185,10 +176,12 @@ class SQLModule(BaseModule):
             to_tensor=to_tensor,
             mode=mode,
             dataset=self._dataset,
-            tst_active=self._activate,
+            # tst_active=self._activate,
+            # eval_activate=self._eval_activate,
         )
-
-        rewards_tensor = rewards_tensor.to(device)            
+        # if mode == "train":
+        #
+        rewards_tensor = rewards_tensor.to(device)
         return rewards_tensor
 
     def infer(

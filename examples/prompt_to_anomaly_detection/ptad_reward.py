@@ -1,5 +1,6 @@
 import os.path
 import random
+import pandas as pd
 
 import torch
 from torch.utils.data import Dataset
@@ -9,6 +10,8 @@ from typing import List, Tuple, Union, Dict, Any, Optional
 from transformers import pipeline, AutoTokenizer
 from bert_score import BERTScorer
 from collections import defaultdict
+
+from examples.prompt_to_anomaly_detection.ptad_modules.metrics import metric_cal
 from ptad_modules import PromptedGenerator, TextStyleTransferOutputSelector
 
 from rlprompt.rewards import BaseReward
@@ -26,7 +29,7 @@ class PromptedToAnomalyDetectionReward(BaseReward):
             self,
             task_lm: str,
             task_top_k: int,  # Top-k sampling for text generation
-            style_classifier: str,
+            # style_classifier: str,
             style_tokenizer: Optional[str],
             style_batch_size: int,
             pad_token: str,
@@ -38,7 +41,6 @@ class PromptedToAnomalyDetectionReward(BaseReward):
             control_output_length: bool,  # Control output length for speedup
             template: str,  # Template for prompt generation
             end_punct: str,  # End punctuation to cut off after generation
-
     ):
         generator_device = 0  # TODO
         reward_device = 0  # TODO
@@ -56,18 +58,20 @@ class PromptedToAnomalyDetectionReward(BaseReward):
         self.num_bootstraps = num_bootstraps
 
         # Loading reward models
-        if style_tokenizer is None:
-            style_tokenizer = style_classifier
-        self.selector = TextStyleTransferOutputSelector(style_classifier,
-                                                        style_tokenizer,
-                                                        style_batch_size,
-                                                        reward_device)
+        # if style_tokenizer is None:
+        # style_tokenizer = style_classifier
+        # self.selector = TextStyleTransferOutputSelector(style_classifier,
+        #                                                 style_tokenizer,
+        #                                                 style_batch_size,
+        #                                                 reward_device)
 
         # Misc. training details
         self.num_repeats = num_repeats
         self.compute_zscore = compute_zscore
         self._counter = 0
         self.tokens_explored = set()
+
+        # extend config
         self.model = LangSAM()
 
     def forward(
@@ -81,102 +85,85 @@ class PromptedToAnomalyDetectionReward(BaseReward):
             to_tensor: bool,
             mode: str,
             dataset: Optional[str],
-            tst_active: int = 0,
     ) -> Tuple[Union[List[float], torch.Tensor], Dict[str, Any]]:
         if mode == 'train':
             self._counter += 1
             source_strs = self._repeat_texts(source_texts)
-            # target_labels = self._repeat_texts(target_labels)
         elif mode == "infer":
-            source_strs = source_texts
+            return self.evaluate(source_img, GT_img, file_names, source_texts, output_tokens,
+                                 to_tensor, mode, dataset)
         else:
             raise ValueError
 
+        assert len(output_tokens) == len(source_strs)
+
+        # predict_mask_list is a list contain all predict mask of mutil prompt to one image value [0,1]
+        predict_mask_list = [[] for _ in output_tokens]
+        rewards = []
+        for (source, gt, file_name) in zip(source_img, GT_img, file_names):
+            one_prompt_predict_masks = self.generate_predict_mask(output_tokens,
+                                                                  source_strs,
+                                                                  source,
+                                                                  gt,
+                                                                  file_name,
+                                                                  mode
+                                                                  )
+            for (l, m) in zip(predict_mask_list, one_prompt_predict_masks):
+                l.append(m)
+        gt_label = []
+        for gt in GT_img:
+            if np.all(gt.numpy().astype('uint8') == 0):
+                gt_label.append(0)
+            else:
+                gt_label.append(1)
+
+        for predict_mask in predict_mask_list:
+            result_dict = metric_cal(np.array(predict_mask), gt_label, np.array(GT_img))
+            # print("cal_res,f1:", result_dict['p_f1'])
+            if result_dict['p_f1'] == 0.0 or result_dict['p_f1'] is None:
+                rewards.append(random.random())
+            else:
+                rewards.append(result_dict['p_f1'])
+        # loss = (sum(rewards)/len(rewards))*2-100.0
+        # loss = torch.tensor(loss, requires_grad=True).float()
+        # in order to prevent nothing return back
+        # rewards[rewards == 0.0] = random.random()
         if dataset == None:
             dataset = '-1'
+        else:
+            ex_path = os.path.join("./data", dataset, "tokens_reward.csv")
+            existing_data = pd.read_csv(ex_path)
+            assert len(output_tokens) == len(rewards)
+            new_data = {
+                "name": [file_names[0]] * len(output_tokens),
+                "tokens": output_tokens,
+                "reward": rewards
+            }
+            new_data_df = pd.DataFrame(new_data)
+            combined_data = pd.concat([existing_data, new_data_df], ignore_index=True)
+            combined_data.to_csv(ex_path, index=False)
 
-        prompt_tokens = output_tokens
-        # convert the output tokens to string. meaning this is the output prompt that we can use
-        # and its a list consist of string
-        prompt_strs = self._convert_tokens_to_string(prompt_tokens)
-        assert len(prompt_strs) == len(source_strs)
-
-        n_reward = self.num_samples
-        k_reward = self.num_bootstraps
-        N = n_reward * k_reward
-
-        # input_rewards: Dict[str, List[float]] = defaultdict(list)
-        reward_list = []
-        for i, (prompt, src) in enumerate(zip(prompt_strs, source_strs)):
-            hypos_rewards_list = []
-            hypos = []
-
-            # whether acitive tst
-            if tst_active:
-                if mode == 'train':
-                    hypos = self.generator.sample_generate(prompt, src, N,
-                                                           self.top_k, self.top_p)
-                elif mode == 'infer':
-                    hypos = self.generator.sample_generate(prompt, src, 1,
-                                                           self.top_k, self.top_p)
-            else:
-                hypos = [prompt]
-
-            for hypo in hypos:
-                # print("input prompt :", src)
-                # print("new prompt :", hypo)
-                for (source, GT, file_name) in zip(source_img, GT_img, file_names):
-                    # iou = self.prompts_to_seg(text_prompt=hypo,
-                    #                           src=src,
-                    #                           image_pil=source,
-                    #                           image_gt=GT,
-                    #                           file_name=file_name,
-                    #                           dataset=dataset,
-                    #                           mode=mode)
-                    f1 = self.calculate_f1_score(text_prompt=hypo,
-                                                 src=src,
-                                                 image_pil=source,
-                                                 image_gt=GT,
-                                                 file_name=file_name,
-                                                 dataset=dataset,
-                                                 mode=mode)
-                    hypos_rewards_list.append(round(f1 * 100, 2))
-                # reward = sum(iou_list) / len(iou_list)
-            reward = sum(hypos_rewards_list) / len(hypos_rewards_list)
-            if reward == 0:
-                reward = random.random()
-            reward_list.append(reward)
-            if mode == 'infer':
-                print("output prompt to be:", hypo)
-                print("this prompt predict res :", hypos_rewards_list)
-                print("avg_score :", reward_list)
-                return torch.tensor(reward_list)
-                # sum_rewards, content_scores, style_probs = \
-                #     self.selector.compute_sample_rewards(src, hypos, label)4
-            # avg_reward_to_this_img = sum(reward_list) / len(reward_list)
-            # if avg_reward_to_this_img == 0:
-            #     avg_reward_to_this_img = random.random()
-            # rewards.append(avg_reward_to_this_img)
-        rewards = reward_list
+        print(f"epoch {self._counter} generate res :", rewards)
         rewards_tensor_list = [torch.tensor(scalar) for scalar in rewards]
 
         rewards_tensor = torch.stack(rewards_tensor_list)
         rewards_tensor = rewards_tensor.float()
 
-        mean_value = rewards_tensor.mean()
-        std_value = rewards_tensor.std()
-
-        normalized_rewards = (rewards_tensor - mean_value) / std_value
+        if len(rewards_tensor) > 1:
+            mean_value = rewards_tensor.mean()
+            std_value = rewards_tensor.std()
+            if std_value == 0:
+                normalized_rewards = rewards_tensor - 50.0 / 50.0
+            else:
+                normalized_rewards = (rewards_tensor - mean_value) / std_value
+        else:
+            normalized_rewards = rewards_tensor - 50.0 / 50.0
+        print(f"epoch {self._counter} return :", normalized_rewards)
         if to_tensor is True:
             return normalized_rewards
         else:
             return normalized_rewards.tolist()
-
-    # def _compute_iou_reward(self,
-    #                         rewards_tensor:torch.Tensor
-    # ) -> torch.Tensor:
-    #
-    #     return rewards_tensor
+        # return loss
 
     def _repeat_texts(
             self,
@@ -189,8 +176,13 @@ class PromptedToAnomalyDetectionReward(BaseReward):
                                       for s in texts]))
 
     def _convert_tokens_to_string(self, tokens: List[List[str]]) -> List[str]:
-        return [self.tokenizer.convert_tokens_to_string(s)
-                for s in tokens]
+        converted_strings = []
+        for token_list in tokens:
+            readable_str = self.tokenizer.convert_tokens_to_string(token_list)
+            converted_strings.append(readable_str)
+        return converted_strings
+        # return [self.tokenizer.convert_tokens_to_string(s)
+        #         for s in tokens]
 
     # calculate of IoU
     def convert_to_binary_mask(self, goroundtrue):
@@ -212,45 +204,6 @@ class PromptedToAnomalyDetectionReward(BaseReward):
         iou = intersection / union
         return iou
 
-    # do promt to segment ,and return the iou between groundtrue and predict image
-    # def prompt_to_seg(self,text_prompt,image_pil,image_gt):
-    #     model = LangSAM()
-    #     array = np.array(image_gt)
-    #     gt_mask = array > 128
-    #
-    #     masks, boxes, phrases, logits = model.predict(image_pil, text_prompt)
-    #     iou = self.calculate_iou(gt_mask, masks)
-    #     return iou
-
-    # do promt to segment ,and return the iou between groundtrue and predict image
-    # def prompts_to_seg(self,
-    #                    text_prompts: List[str],
-    #                    image_pil: torch.Tensor,
-    #                    image_gt: torch.Tensor
-    #                    ) -> List[float]:
-    #     # res = []
-    #     # for i in range(len(text_prompts)):
-    #     #     res.append(random.random())
-    #     # return res
-    #     array = np.array(image_gt)
-    #     gt_mask = array > 128
-    #     max_iou = 0
-    #     reward_prompt = text_prompts[0]
-    #     image = Image.fromarray(image_pil.numpy().astype('uint8'))
-    #     iou_list = []
-    #     for text_prompt in text_prompts:
-    #         masks, _, _, _ = self.model.predict(image, text_prompt)
-    #         if masks.numel() == 0:
-    #             iou_list.append(0)
-    #             continue
-    #         iou = self.calculate_iou(gt_mask, masks)
-    #         iou_list.append(round(iou*100, 2))
-    #         # if iou >max_iou:
-    #         #     max_iou = iou
-    #         #     reward_prompt = text_prompt
-    #
-    #     return iou_list
-
     def prompts_to_seg(self,
                        text_prompt: str,
                        src: str,
@@ -260,7 +213,6 @@ class PromptedToAnomalyDetectionReward(BaseReward):
                        dataset: Optional[str],
                        mode: str,
                        ) -> float:
-
         array = np.array(image_gt)
         gt_mask = array > 128
         image = Image.fromarray(image_pil.numpy().astype('uint8'))
@@ -274,76 +226,17 @@ class PromptedToAnomalyDetectionReward(BaseReward):
             text_prompt = "find anomaly" + src
             return self.prompts_to_seg(text_prompt, src, image_pil, image_gt, file_name, dataset, mode)
 
-        # situation of lang_sam predict generate multi masks
-        if masks.dim() == 3:
-            masks = masks[0:1]
+        masks = masks[0:1]
         int_tensor_data = masks.to(dtype=torch.uint8) * 255
         mask_array = int_tensor_data.squeeze().numpy()
-        mask_array = ~mask_array
 
         # saving predict img
-        try:
-            if dataset != '-1':
-                save_path = os.path.join('./data', dataset, 'predict_folder', mode + '_res')
-                temp = Image.fromarray(mask_array, mode='L')
-                temp.save(os.path.join(save_path, file_name))
-        except Exception as e:
-            print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-            print(f"An exception occurred when saving output image: {e}")
-            print("masks shape to be :", masks.shape)
-            print("text_prompt to be :", text_prompt)
-            print("img_name to be :", file_name)
-            print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        self.save_predict_array(dataset, mode, mask_array, file_name)
 
         iou = self.calculate_iou(gt_mask, mask_array)
         return round(iou * 100, 2)
 
-    # def prompts_to_seg_infer(self,
-    #                          text_prompt: str,
-    #                          image_pil: torch.Tensor,
-    #                          image_gt: torch.Tensor,
-    #                          file_name: str,
-    #                          ) -> float:
-    #     save_path = './data/ksdd2/predict_folder/infer_res'
-    #     array = np.array(image_gt)
-    #     gt_mask = array > 128
-    #     image = Image.fromarray(image_pil.numpy().astype('uint8'))
-    #     masks, _, _, _ = self.model.predict(image, text_prompt)
-    #     if masks.numel() == 0:
-    #         print("predict fialled in generate mask,text prompt is ", text_prompt)
-    #         print("image name is ", file_name)
-    #         return 0
-    #     try:
-    #         if masks.dim() == 3:
-    #             masks = masks[0:1]
-    #         int_tensor_data = masks.to(dtype=torch.uint8) * 255
-    #         mask_array = int_tensor_data.squeeze().numpy()
-    #         mask_array = ~mask_array
-    #         temp = Image.fromarray(mask_array, mode='L')
-    #         # text_prompt = text_prompt.replace('?', ' question').replace('.', ' dot')
-    #         # f_name = file_name.split('.')[0] + text_prompt + '.png'
-    #         temp.save(os.path.join(save_path, file_name))
-    #     except Exception as e:
-    #         print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-    #         print(f"An exception occurred when saving output image: {e}")
-    #         print("masks shape to be :", masks.shape)
-    #         print("text_prompt to be :", text_prompt)
-    #         print("img_name to be :", file_name)
-    #         print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-    #
-    #     goroundtrue_array = gt_mask
-    #     mask_array = masks.squeeze().numpy()
-    #     mask_array = ~mask_array
-    #     false_ratio = np.mean(mask_array==False)
-    #     if false_ratio > 0.98 and np.all(goroundtrue_array == False):
-    #         return 100.00
-    #     intersection = np.logical_and(goroundtrue_array, mask_array).sum()
-    #     union = np.logical_or(goroundtrue_array, mask_array).sum()
-    #     iou = intersection / union
-    #
-    #     return round(iou*100, 2)
-
-    def calculate_f1_score(self,
+    def calculate_accuracy(self,
                            text_prompt: str,
                            src: str,
                            image_pil: torch.Tensor,
@@ -351,6 +244,7 @@ class PromptedToAnomalyDetectionReward(BaseReward):
                            file_name: str,
                            dataset: Optional[str],
                            mode: str,
+                           is_regenerate: bool = False
                            ) -> float:
         image_array = image_pil.numpy().astype('uint8')
         image = Image.fromarray(image_array)
@@ -361,43 +255,167 @@ class PromptedToAnomalyDetectionReward(BaseReward):
             print("predict fialled in generate mask,text prompt is ", text_prompt)
             print("image name is ", file_name)
             text_prompt = "find anomaly" + src
-            return self.prompts_to_seg(text_prompt, src, image_pil, image_gt, file_name, dataset, mode)
-
+            if not is_regenerate:
+                return self.calculate_accuracy(text_prompt, src, image_pil, image_gt, file_name, dataset, mode, True)
+            else:
+                return 0.0
         # situation of lang_sam predict generate multi masks
         if masks.dim() == 3:
             masks = masks[0:1]
         int_tensor_data = masks.to(dtype=torch.uint8) * 255
         mask_array = int_tensor_data.squeeze().numpy()
-        mask_array = ~mask_array
-        mask_array[mask_array != 0] = 1
+
         gt_array = image_gt.numpy().astype('uint8')
+        gt_array[gt_array != 0] = 255
+
+        # saving predict img
+        self.save_predict_array(dataset, mode, gt_array, mask_array, file_name)
+
+        # mask_array = ~mask_array
+        mask_array[mask_array != 0] = 1
         gt_array[gt_array != 0] = 1
 
         assert gt_array.shape == mask_array.shape, "Shapes of y_true and y_pred must be the same"
         # Calculate True Positive (TP)
         TP = np.sum(np.logical_and(gt_array, mask_array))
-        # Calculate False Positive (FP)
-        FP = np.sum(np.logical_and(np.logical_not(gt_array), mask_array))
-        # Calculate False Negative (FN)
-        FN = np.sum(np.logical_and(gt_array, np.logical_not(mask_array)))
-        # Calculate Precision
-        precision = TP / (TP + FP) if (TP + FP) != 0 else 0.0
-        # Calculate Recall
-        recall = TP / (TP + FN) if (TP + FN) != 0 else 0.0
-        # Calculate F1-score
-        f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) != 0 else 0.0
+        # Calculate False Positive (TN)
+        TN = np.sum(np.logical_and(np.logical_not(gt_array), np.logical_not(mask_array)))
 
+        total_samples = gt_array.size
+        # Calculate Accuracy
+        accuracy = (TP + TN) / total_samples
+        return accuracy
+
+    def save_predict_array(self, dataset, mode, gt_array, mask_array, file_name):
         try:
             if dataset != '-1':
                 save_path = os.path.join('./data', dataset, 'predict_folder', mode + '_res')
+                gt_save_path = os.path.join('./data', dataset, 'predict_folder', mode + '_gt')
                 temp = Image.fromarray(mask_array, mode='L')
                 temp.save(os.path.join(save_path, file_name))
+                gt_temp = Image.fromarray(gt_array, mode='L')
+                gt_temp.save(os.path.join(gt_save_path, file_name))
+
         except Exception as e:
             print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
             print(f"An exception occurred when saving output image: {e}")
-            print("masks shape to be :", masks.shape)
-            print("text_prompt to be :", text_prompt)
+            # print("masks shape to be :", masks.shape)
+            # print("text_prompt to be :", text_prompt)
             print("img_name to be :", file_name)
             print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
 
-        return f1_score
+    def generate_predict_mask(self,
+                              prompt_strs: List[List[str]],
+                              source_strs: List[str],
+                              source_img: torch.Tensor,
+                              GT_img: torch.Tensor,
+                              file_name: str,
+                              mode: str
+                              ) -> List[np.ndarray]:
+        save_path = './data/ksdd2/predict_folder'
+        predict_mask_list = []
+        img = Image.fromarray(source_img.numpy().astype('uint8'))
+        GT = GT_img
+        for (prompt_list, src) in zip(prompt_strs, source_strs):
+            prompt = ' '.join(prompt_list)
+            masks, _, _, _ = self.model.predict(img, prompt)
+            if masks.numel() == 0:
+                # deal with mask no generate situation
+                log_info = "no anomaly detect from " + file_name + ".prompt:" + prompt
+                print(log_info)
+                mask_array = np.zeros_like(GT_img)
+            else:
+                masks = masks[0:1]
+                int_tensor_data = masks.to(dtype=torch.int) * 255
+                mask_array = int_tensor_data.squeeze().numpy()
+                if np.count_nonzero(mask_array == 255) / mask_array.size > 0.9:
+                    log_info = "no anomaly detect from " + file_name + ".prompt:" + prompt
+                    print(log_info)
+                    mask_array = np.zeros_like(GT_img)
+                else:
+                    log_info = "anomaly detect from " + file_name + ".prompt:" + prompt
+                    print(log_info)
+            predict_mask_list.append(mask_array)
+
+        res_path = os.path.join(save_path, mode + "_res")
+        if not os.path.exists(res_path):
+            os.makedirs(res_path)
+        gt_path = os.path.join(save_path, mode + "_gt")
+        if not os.path.exists(gt_path):
+            os.makedirs(gt_path)
+        # save predict mask
+        for i, mask in enumerate(predict_mask_list):
+            path = os.path.join(res_path, file_name.split('.')[0] + f'_{i}' + ".png")
+            Image.fromarray(mask).convert('L').save(path)
+        path = os.path.join(gt_path, file_name)
+        Image.fromarray(GT.numpy().astype('uint8')).save(path)
+
+        predict_mask_list = [(arr.astype(float) / 255) for arr in predict_mask_list]
+        return predict_mask_list
+
+    def evaluate(
+            self,
+            source_img: List[Image.Image],
+            GT_img: List[Image.Image],
+            file_names: List[str],
+            source_texts: List[str],
+            # target_labels: List[str],
+            output_tokens: List[List[str]],
+            to_tensor: bool,
+            mode: str,
+            dataset: Optional[str],
+    ) -> Tuple[Union[List[float], torch.Tensor], Dict[str, Any]]:
+        if mode == "infer":
+            source_strs = [source_texts[0] for _ in range(len(output_tokens))]
+        else:
+            raise ValueError
+
+        prompt_strs = output_tokens
+        assert len(prompt_strs) == len(source_strs)
+
+        predict_mask_list = []
+
+        for (source, gt, file_name) in zip(source_img, GT_img, file_names):
+            one_prompt_predict_masks = self.generate_predict_mask(prompt_strs,
+                                                                  source_strs,
+                                                                  source,
+                                                                  gt,
+                                                                  file_name,
+                                                                  mode
+                                                                  )
+            predict_mask_list.append(one_prompt_predict_masks)
+
+        gt_label = []
+        for gt in GT_img:
+            if np.all(gt.numpy().astype('uint8') == 0):
+                gt_label.append(0)
+            else:
+                gt_label.append(1)
+        rewards = []
+
+        result_dict = metric_cal(np.array(predict_mask_list), gt_label, np.array(GT_img))
+        if result_dict['p_f1'] == 0.0 or result_dict['p_f1'] is None:
+            rewards.append(random.random())
+        else:
+            rewards.append(result_dict['p_f1'])
+
+        if dataset == None:
+            dataset = '-1'
+        else:
+            ex_path = os.path.join("./data", dataset, "eval_tokens_reward.csv")
+            existing_data = pd.read_csv(ex_path)
+            assert len(prompt_strs) == len(rewards)
+            new_data = {
+                "name": file_names,
+                "tokens": prompt_strs * len(file_names),
+                "gt_label": gt_label,
+            }
+            new_data_df = pd.DataFrame(new_data)
+            combined_data = pd.concat([existing_data, new_data_df], ignore_index=True)
+            combined_data.to_csv(ex_path, index=False)
+
+        rewards_tensor_list = [torch.tensor(scalar) for scalar in rewards]
+        rewards_tensor = torch.stack(rewards_tensor_list)
+        rewards_tensor = rewards_tensor.float()
+        print("this epoch return :", prompt_strs, rewards)
+        return rewards_tensor

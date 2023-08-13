@@ -37,7 +37,8 @@ class SinglePromptModel(BaseModel):
             batch_size = min(self.prompt_infer_batch_size, len(source_texts))
         else: 
             batch_size = self.prompt_train_batch_size
-        prompt_source = self._get_prompt_source(batch_size=batch_size)
+        # prompt_source = self._get_prompt_source(batch_size=batch_size)
+        prompt_source = [source_texts[0] for _ in range(batch_size)]
 
         if max_new_tokens is None: 
             max_new_tokens = self.prompt_length

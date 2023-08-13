@@ -1,3 +1,5 @@
+import random
+
 import torch
 from torch import nn
 import numpy as np
@@ -71,9 +73,12 @@ class LMAdaptorModel(BaseModel):
                 m.bias.data.fill_(-0.0001)
         self.mlp.apply(_init_weights)
 
-    def _mlp_forward(self, state: torch.Tensor) -> torch.Tensor:
+    def _mlp_forward(self, state: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
         mlp_output = self.mlp(state)
-        logits = self.generator.model.lm_head(mlp_output)
+        if temperature == 1.0:
+            logits = self.generator.model.lm_head(mlp_output)
+        else:
+            logits = self.generator.model.lm_head(mlp_output) / (temperature + 1e-10)
 
         if self.fluent:
             lm_logits = self.generator.model.lm_head(state)
@@ -149,8 +154,10 @@ class LMAdaptorModel(BaseModel):
             token_strs = [self.generator.tokenizer.convert_tokens_to_string([t])
                           for t in tokens]
 
-            for s, t in zip(sample_tokens, tokens): 
+            for s, t in zip(sample_tokens, tokens):
                 s.append(t)
+            # for s, t in zip(sample_tokens, token_strs):
+            #     s.append(t)
             sample_ids.append(actions.unsqueeze(dim=1))  # [batch_size, 1]
             sample_logits.append(logits.unsqueeze(dim=1))
             # [batch_size, 1, vocab_size]
@@ -180,14 +187,21 @@ class LMAdaptorModel(BaseModel):
         if eos_token_id is not None:
             raise NotImplementedError(
                 "Only support fixed length prompt for now")
-
+        # decay factor for generate mutil token,when a token were chosen,it's possibility to be chose again will be lower.
+        # decay_factor = 0.5
         state, past_key_values = self._get_generation_cache(source_texts)
         sample_tokens = [[] for _ in source_texts]
         sample_ids, sample_logits = [], []
+        chosen_tokens = set()
         for i in range(max_new_tokens):
             logits = self._mlp_forward(state)
             logits = logits + self.logit_bias
             # print(logits[:, 4:].min().item(), logits.max().item())
+
+            # Exclude already chosen tokens from logits
+            for token_id in chosen_tokens:
+                # logits[:, token_id] *= decay_factor
+                logits[:, token_id] = float('-inf')
 
             actions = logits.argmax(dim=-1)  # [batch_size]
             tokens = [self.generator.tokenizer.convert_ids_to_tokens([a])[0]
@@ -197,8 +211,11 @@ class LMAdaptorModel(BaseModel):
 
             for s, t in zip(sample_tokens, tokens): 
                 s.append(t)
+                chosen_tokens.add(actions[0].item())  # Add chosen token to set
+
             sample_ids.append(actions.unsqueeze(dim=1))
             sample_logits.append(logits.unsqueeze(dim=1))
+            # chosen_tokens.add(actions[0].item())  # Add chosen token to set
 
             state, past_key_values = self._get_generation_cache(token_strs,
                                                                 past_key_values)
@@ -262,7 +279,7 @@ class LMAdaptorModel(BaseModel):
                                       eos_token_id=eos_token_id)
         elif is_sample_gen_mode:
             # this is the return of text_style_transfer.
-            # it's a Dict that contain "sample_tokens" that is the output of test_style_transfer
+            # it's a Dict that contain "sample_tokens" that is the output of LMs
             return self.sample(source_texts=source_texts,
                                top_k=top_k,
                                top_p=top_p,

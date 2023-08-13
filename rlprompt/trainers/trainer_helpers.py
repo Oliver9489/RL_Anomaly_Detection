@@ -9,8 +9,15 @@ from rlprompt.trainers import Trainer
 def make_trainer(module: BaseModule,
                  train_dataset: Optional[Dataset],
                  eval_dataset: Optional[Dataset],
-                 config: "DictConfig") -> Trainer:
-    return Trainer(module, train_dataset, config.train_batch_size,
+                 config: "DictConfig",
+                 eval_batch_size: int = -1,
+                 train_batch_size: int = -1,
+                 ) -> Trainer:
+    if eval_batch_size != -1:
+        config.eval_batch_size = eval_batch_size
+    if train_batch_size != -1:
+        config.train_batch_size = train_batch_size
+    return Trainer(module, config.dataset, train_dataset, config.train_batch_size,
                    config.train_shuffle, config.train_drop_last, 
                    config.num_train_epochs, config.max_train_steps, 
                    config.do_eval, eval_dataset, config.eval_batch_size, 
@@ -36,7 +43,7 @@ class TrainerConfig:
     eval_steps: int = -1
     # Save params
     do_save: bool = True
-    save_dir: str = './outputs'
+    save_dir: str = './result'
     save_steps: int = -1
     # Optimizer params
     learning_rate: float = 1e-4

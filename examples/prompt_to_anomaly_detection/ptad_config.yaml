@@ -13,7 +13,7 @@ control_output_length: true
 # Single Prompt Model
 prompt_length: 5
 prompt_train_batch_size: 4
-prompt_infer_batch_size: 4
+prompt_infer_batch_size: 1
 # LM Adaptor Model
 logit_bias: -10
 # SQL Module
@@ -23,7 +23,7 @@ reward_shaping_new_min: -20
 reward_shaping_new_max: 80
 top_k: 50
 # Trainer
-train_batch_size: 2
+train_batch_size: 4
 max_train_steps: 12000
 train_shuffle: false
 eval_batch_size: 16
